@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/user_model.dart';
+import 'dart:html' as html;
 
 class FirebaseService {
   /// Copy all cards from users/{uid}/cards subcollection to a top-level 'cards' collection.
@@ -42,55 +43,139 @@ class FirebaseService {
   required bool flagged,
   List<String>? flagReasons,
   }) async {
-    // Simple rules for flagging suspicious transactions
-    List<String> reasons = flagReasons ?? [];
-    bool isFlagged = flagged;
-    if (amount > 1000) {
-      isFlagged = true;
-      reasons.add('Large amount');
-    }
-    if (merchant.toLowerCase().contains('test')) {
-      isFlagged = true;
-      reasons.add('Test merchant');
-    }
-    final txRef = await _firestore.collection('transactions').add({
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('User not logged in');
+    
+    // Create transaction with proper format for webhook compatibility
+    final txnId = 'app_${DateTime.now().millisecondsSinceEpoch}_${user.uid.substring(0, 8)}';
+    final txnData = {
+      'txnId': txnId,
+      'userId': user.uid,
       'merchant': merchant,
       'cardNumber': cardNumber,
       'cvv': cvv,
       'amount': amount,
       'currency': currency,
-      'timestamp': Timestamp.fromDate(timestamp),
-      'flagged': isFlagged,
-      'flag_reasons': reasons,
-    });
-    // If flagged, create a flag and an alert document for fraud alert feature
-    if (isFlagged) {
-      final user = _auth.currentUser;
-      // Create flag
-      await _firestore.collection('flags').add({
-        'userId': user?.uid ?? '',
-        'transactionId': txRef.id,
-        'cardId': '', // If you have cardId, pass it here
-        'createdAt': FieldValue.serverTimestamp(),
-        'status': 'pending',
-        'reasons': reasons,
-        'merchant': merchant,
+      'timestamp': timestamp.millisecondsSinceEpoch,
+      'cardId': cardNumber, // Use cardNumber as cardId for now
+    };
+    
+    // Write to transactions collection (this will trigger the Firestore rules via webhook logic)
+    await _firestore.collection('transactions').doc(txnId).set(txnData);
+    
+    // Run the same fraud detection logic as the webhook server
+    await _runFraudDetection(txnData);
+  }
+  
+  /// Run fraud detection logic (same as webhook server)
+  Future<void> _runFraudDetection(Map<String, dynamic> txn) async {
+    final amount = txn['amount'] as double;
+    final timestamp = txn['timestamp'] as int;
+    final userId = txn['userId'] as String;
+    final txnId = txn['txnId'] as String;
+    
+    List<String> reasons = [];
+    bool suspicious = false;
+    
+    // Same rules as webhook server
+    if (amount > 5000) {
+      suspicious = true;
+      reasons.add('Large amount');
+    }
+    
+    final hour = DateTime.fromMillisecondsSinceEpoch(timestamp).hour;
+    if (hour < 6 || hour > 22) {
+      suspicious = true;
+      reasons.add('Odd hour');
+    }
+    
+    // Check for test merchants
+    final merchant = (txn['merchant'] as String? ?? '').toLowerCase();
+    if (merchant.contains('test') || merchant.contains('dummy')) {
+      suspicious = true;
+      reasons.add('Test merchant');
+    }
+    
+    // Velocity check: last 5 min
+    final sinceMillis = DateTime.now().millisecondsSinceEpoch - 5 * 60 * 1000;
+    final recentTxns = await _firestore.collection('transactions')
+        .where('userId', isEqualTo: userId)
+        .where('timestamp', isGreaterThanOrEqualTo: sinceMillis)
+        .get();
+    
+    if (recentTxns.docs.length > 3) {
+      suspicious = true;
+      reasons.add('High velocity');
+    }
+    
+    if (suspicious) {
+      // Create flag and alert (same as webhook server)
+      await _firestore.collection('flags').doc(txnId).set({
+        'userId': userId,
+        'txnId': txnId,
+        'transactionId': txnId, // Add this for compatibility with realtime check screen
+        'cardId': txn['cardId'],
+        'merchant': txn['merchant'],
         'amount': amount,
-      });
-      // Create alert
-      await _firestore.collection('alerts').add({
-        'userId': user?.uid ?? '',
-        'transactionId': txRef.id,
-        'cardId': '',
+        'reasons': reasons,
+        'status': 'pending',
         'createdAt': FieldValue.serverTimestamp(),
+      });
+      
+      await _firestore.collection('alerts').doc(txnId).set({
+        'userId': userId,
+        'txnId': txnId,
+        'transactionId': txnId,
+        'reasons': reasons,
         'type': 'suspicious_transaction',
         'status': 'unread',
-        'reasons': reasons,
-        'merchant': merchant,
+        'merchant': txn['merchant'],
         'amount': amount,
+        'cardId': txn['cardId'],
+        'createdAt': FieldValue.serverTimestamp(),
       });
+      
+      // Send local notification (since we can't send FCM from client)
+      print('🚨 FRAUD DETECTED: $reasons for transaction $txnId');
+      
+      // Try to show browser notification
+      try {
+        await _showLocalNotification(txnId, reasons, txn['merchant'] as String, amount);
+      } catch (e) {
+        print('Failed to show local notification: $e');
+      }
     }
   }
+  
+  /// Show local browser notification for fraud detection
+  Future<void> _showLocalNotification(String txnId, List<String> reasons, String merchant, double amount) async {
+    try {
+      // Request permission if not already granted
+      final permission = await html.Notification.requestPermission();
+      if (permission == 'granted') {
+        final notification = html.Notification(
+          'Fraud Alert - Suspicious Transaction',
+          body: 'Merchant: $merchant, Amount: \$${amount.toStringAsFixed(2)}\nReasons: ${reasons.join(", ")}',
+          icon: '/favicon.png',
+        );
+        
+        // Auto close after 10 seconds
+        Future.delayed(const Duration(seconds: 10), () {
+          notification.close();
+        });
+        
+        // Handle click to navigate to fraud alerts
+        notification.onClick.listen((event) {
+          // Bring window to front and close notification
+          notification.close();
+          // Optional: You can add navigation logic here if needed
+        });
+      }
+    } catch (e) {
+      print('Browser notification error: $e');
+    }
+  }
+  
   /// Store a credit card in the user's cards subcollection in Firestore.
   Future<void> addCreditCard(Map<String, String> card) async {
     final user = _auth.currentUser;
