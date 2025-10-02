@@ -27,6 +27,54 @@ app.use(morgan('combined'));
 // Health check
 app.get('/health', (req, res) => res.send('ok'));
 
+// Get all transactions endpoint
+app.get('/api/transactions', async (req, res) => {
+  try {
+    const apiKey = req.headers['x-api-key'];
+    if (!process.env.WEBHOOK_API_KEY || apiKey !== process.env.WEBHOOK_API_KEY) {
+      return res.status(401).send('Unauthorized');
+    }
+
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+    const userId = req.query.userId; // Optional user filter
+
+    let query = db.collection('transactions');
+    
+    // If userId is provided, filter by user
+    if (userId) {
+      query = query.where('userId', '==', userId);
+    }
+    
+    const snapshot = await query
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .offset(offset)
+      .get();
+
+    const transactions = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      transactions.push({
+        id: doc.id,
+        ...data,
+        timestamp: data.timestamp || Date.now()
+      });
+    });
+
+    res.json({
+      success: true,
+      data: transactions,
+      total: transactions.length,
+      limit,
+      offset
+    });
+  } catch (err) {
+    console.error('Error fetching transactions:', err);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
 // Webhook endpoint for transactions
 app.post('/webhook/transactions', async (req, res) => {
   try {

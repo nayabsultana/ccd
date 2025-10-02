@@ -20,6 +20,15 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   final _amountController = TextEditingController();
   final _currencyController = TextEditingController();
   bool _isSubmitting = false;
+  bool _useBackendAPI = true; // Toggle between backend API and Firestore
+  List<Map<String, dynamic>> _backendTransactions = [];
+  bool _loadingBackendData = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBackendTransactions();
+  }
 
   @override
   void dispose() {
@@ -29,6 +38,37 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
     _amountController.dispose();
     _currencyController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadBackendTransactions() async {
+    if (!_useBackendAPI) return;
+    
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+    
+    setState(() => _loadingBackendData = true);
+    try {
+      final transactions = await FirebaseService().fetchUserTransactionsFromBackend(
+        userId: currentUser.uid, 
+        limit: 50
+      );
+      if (mounted) {
+        setState(() {
+          _backendTransactions = transactions;
+          _loadingBackendData = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loadingBackendData = false;
+          _useBackendAPI = false; // Fallback to Firestore on error
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Backend unavailable, using Firestore: $e'))
+        );
+      }
+    }
   }
 
   Future<void> _addTransaction() async {
@@ -54,6 +94,11 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
         _cvvController.clear();
         _amountController.clear();
         _currencyController.clear();
+        
+        // Refresh backend data if using backend API
+        if (_useBackendAPI) {
+          _loadBackendTransactions();
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -87,8 +132,24 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () {
-              setState(() {});
+              if (_useBackendAPI) {
+                _loadBackendTransactions();
+              } else {
+                setState(() {}); // Refresh Firestore stream
+              }
             },
+          ),
+          IconButton(
+            icon: Icon(_useBackendAPI ? Icons.cloud : Icons.storage),
+            onPressed: () {
+              setState(() {
+                _useBackendAPI = !_useBackendAPI;
+                if (_useBackendAPI) {
+                  _loadBackendTransactions();
+                }
+              });
+            },
+            tooltip: _useBackendAPI ? 'Using Backend API' : 'Using Firestore',
           ),
         ],
       ),
@@ -359,7 +420,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                         Padding(
                           padding: const EdgeInsets.all(24),
                           child: Text(
-                            'Recent Transactions',
+                            'My Card Transactions',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
@@ -369,13 +430,80 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                         ),
                         Container(
                           constraints: const BoxConstraints(maxHeight: 400),
-                          child: StreamBuilder<QuerySnapshot>(
-                            stream: FirebaseFirestore.instance
-                                .collection('transactions')
-                                .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid ?? '')
-                                .orderBy('timestamp', descending: true)
-                                .limit(20)
-                                .snapshots(),
+                          child: _useBackendAPI ? _buildBackendTransactionsList() : _buildFirestoreTransactionsList(),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBackendTransactionsList() {
+    if (_loadingBackendData) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
+          ),
+        ),
+      );
+    }
+
+    if (_backendTransactions.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.receipt_long_outlined, size: 48, color: Colors.grey[400]),
+              const SizedBox(height: 16),
+              Text('No transactions found', style: TextStyle(color: Colors.grey[600])),
+              const SizedBox(height: 8),
+              Text('No transactions found for your cards', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      shrinkWrap: true,
+      itemCount: _backendTransactions.length,
+      separatorBuilder: (context, index) => Divider(height: 1, color: Colors.grey[200]),
+      itemBuilder: (context, index) {
+        final data = _backendTransactions[index];
+        return _buildTransactionItem(data);
+      },
+    );
+  }
+
+  Widget _buildFirestoreTransactionsList() {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text('Please log in to view transactions', 
+                      style: TextStyle(color: Colors.grey[600])),
+        ),
+      );
+    }
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('transactions')
+          .where('userId', isEqualTo: currentUser.uid)
+          .orderBy('timestamp', descending: true)
+          .limit(50)
+          .snapshots(),
                             builder: (context, snapshot) {
                               if (snapshot.connectionState == ConnectionState.waiting) {
                                 return const Center(
@@ -413,9 +541,9 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                                       children: [
                                         Icon(Icons.receipt_long_outlined, size: 48, color: Colors.grey[400]),
                                         const SizedBox(height: 16),
-                                        Text('No transactions found', style: TextStyle(color: Colors.grey[600])),
-                                        const SizedBox(height: 8),
-                                        Text('Add your first transaction above', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                  Text('No transactions found', style: TextStyle(color: Colors.grey[600])),
+                  const SizedBox(height: 8),
+                  Text('No transactions found for your cards', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                                       ],
                                     ),
                                   ),
@@ -429,12 +557,28 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                                 separatorBuilder: (context, index) => Divider(height: 1, color: Colors.grey[200]),
                                 itemBuilder: (context, index) {
                                   final data = docs[index].data() as Map<String, dynamic>;
-                                  final merchant = data['merchant'] ?? 'Unknown Merchant';
-                                  final amount = data['amount'] ?? 0;
-                                  final currency = data['currency'] ?? 'USD';
-                                  final timestamp = (data['timestamp'] as Timestamp?)?.toDate();
+            return _buildTransactionItem(data);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildTransactionItem(Map<String, dynamic> data) {
+    final merchant = data['merchant'] ?? 'Unknown Merchant';
+    final amount = data['amount'] ?? 0;
+    final currency = data['currency'] ?? 'USD';
+    
+    DateTime? timestamp;
+    final timestampData = data['timestamp'];
+    if (timestampData is Timestamp) {
+      timestamp = timestampData.toDate();
+    } else if (timestampData is int) {
+      timestamp = DateTime.fromMillisecondsSinceEpoch(timestampData);
+    }
+    
                                   final flagged = data['flagged'] == true;
-                                  final flagReasons = List<String>.from(data['flag_reasons'] ?? []);
+    final flagReasons = List<String>.from(data['flag_reasons'] ?? data['reasons'] ?? []);
 
                                   return Container(
                                     padding: const EdgeInsets.all(16),
@@ -526,21 +670,6 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                                           ),
                                         ),
                                       ],
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

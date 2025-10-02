@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/user_model.dart';
 import 'dart:html' as html;
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class FirebaseService {
   /// Copy all cards from users/{uid}/cards subcollection to a top-level 'cards' collection.
@@ -193,6 +195,111 @@ class FirebaseService {
   }
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  
+  // Backend API configuration
+  static const String _backendUrl = 'http://localhost:8080'; // Change this to your deployed backend URL
+  static const String _apiKey = 'b4c1a3d2-9f4e-43b0-8f6d-7f1e'; // Use the same key as in your backend env
+  
+  /// Fetch transactions for a specific user from backend API
+  Future<List<Map<String, dynamic>>> fetchUserTransactionsFromBackend({required String userId, int limit = 50, int offset = 0}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_backendUrl/api/transactions?userId=$userId&limit=$limit&offset=$offset'),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': _apiKey,
+        },
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          return List<Map<String, dynamic>>.from(data['data'] ?? []);
+        } else {
+          throw Exception('Backend API returned error: ${data['error']}');
+        }
+      } else {
+        throw Exception('Backend API request failed with status: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching user transactions from backend: $e');
+      // Fallback to Firestore if backend fails
+      return await _fetchUserTransactionsFromFirestore(userId: userId, limit: limit);
+    }
+  }
+
+  /// Fetch all transactions from backend API (admin view)
+  Future<List<Map<String, dynamic>>> fetchAllTransactionsFromBackend({int limit = 50, int offset = 0}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_backendUrl/api/transactions?limit=$limit&offset=$offset'),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': _apiKey,
+        },
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          return List<Map<String, dynamic>>.from(data['data'] ?? []);
+        } else {
+          throw Exception('Backend API returned error: ${data['error']}');
+        }
+      } else {
+        throw Exception('Backend API request failed with status: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error fetching transactions from backend: $e');
+      // Fallback to Firestore if backend fails
+      return await _fetchAllTransactionsFromFirestore(limit: limit);
+    }
+  }
+  
+  /// Fallback method to fetch user transactions directly from Firestore
+  Future<List<Map<String, dynamic>>> _fetchUserTransactionsFromFirestore({required String userId, int limit = 50}) async {
+    try {
+      final snapshot = await _firestore
+          .collection('transactions')
+          .where('userId', isEqualTo: userId)
+          .orderBy('timestamp', descending: true)
+          .limit(limit)
+          .get();
+      
+      return snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'id': doc.id,
+          ...data,
+        };
+      }).toList();
+    } catch (e) {
+      print('Error fetching user transactions from Firestore: $e');
+      return [];
+    }
+  }
+
+  /// Fallback method to fetch all transactions directly from Firestore
+  Future<List<Map<String, dynamic>>> _fetchAllTransactionsFromFirestore({int limit = 50}) async {
+    try {
+      final snapshot = await _firestore
+          .collection('transactions')
+          .orderBy('timestamp', descending: true)
+          .limit(limit)
+          .get();
+      
+      return snapshot.docs.map((doc) {
+        final data = doc.data();
+        return {
+          'id': doc.id,
+          ...data,
+        };
+      }).toList();
+    } catch (e) {
+      print('Error fetching transactions from Firestore: $e');
+      return [];
+    }
+  }
 
   /// Returns true if username exists in 'users' collection.
   Future<bool> usernameExists(String username) async {
