@@ -11,6 +11,7 @@ import 'views/realtime_check_screen.dart';
 import 'views/fraud_alert_screen.dart';
 import 'views/profile_screen.dart';
 import 'views/generate_report_page.dart';
+import 'views/onboarding_page.dart';
 import 'services/fcm_service.dart';
 final navigatorKey = GlobalKey<NavigatorState>();
 
@@ -98,6 +99,7 @@ class MyApp extends StatelessWidget {
         '/fraudalerts': (context) => const FraudAlertScreen(),
         '/profile': (context) => const ProfileScreen(),
         '/generate_report': (context) => const GenerateReportPage(),
+        '/onboarding': (context) => const OnboardingPage(),
       },
     );
   }

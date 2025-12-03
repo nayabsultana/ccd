@@ -35,22 +35,36 @@ class FirebaseService {
     });
   }
   /// Add a transaction to the 'transactions' collection in Firestore.
+  ///
+  /// This method is backend‑focused and does not itself run any advanced
+  /// currency conversion or fraud logic – that should be done by the caller
+  /// (for example using the FraudDetectionService).
+  ///
+  /// Optional fraud metadata can be passed in and will be stored alongside
+  /// the transaction for UI and reporting.
   Future<void> addTransaction({
-  required String merchant,
-  required String cardNumber,
-  required String cvv,
-  required double amount,
-  required String currency,
-  required DateTime timestamp,
-  required bool flagged,
-  List<String>? flagReasons,
+    required String merchant,
+    required String cardNumber,
+    required String cvv,
+    required double amount,
+    required String currency,
+    required DateTime timestamp,
+    required bool flagged,
+    List<String>? flagReasons,
+    // Optional fraud / conversion metadata
+    double? convertedAmountInCardCurrency,
+    String? cardCurrency,
+    Map<String, double>? limitValuesUsed,
+    String? fraudVerdict,
+    double? originalAmount,
+    String? originalCurrency,
   }) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('User not logged in');
     
     // Create transaction with proper format for webhook compatibility
     final txnId = 'app_${DateTime.now().millisecondsSinceEpoch}_${user.uid.substring(0, 8)}';
-    final txnData = {
+    final txnData = <String, dynamic>{
       'txnId': txnId,
       'userId': user.uid,
       'merchant': merchant,
@@ -60,12 +74,23 @@ class FirebaseService {
       'currency': currency,
       'timestamp': timestamp.millisecondsSinceEpoch,
       'cardId': cardNumber, // Use cardNumber as cardId for now
+      // Fraud / conversion metadata (all optional)
+      'flagged': flagged,
+      'flag_reasons': flagReasons ?? <String>[],
+      'originalAmount': originalAmount ?? amount,
+      'originalCurrency': originalCurrency ?? currency,
+      'convertedAmountInCardCurrency': convertedAmountInCardCurrency,
+      'cardCurrency': cardCurrency,
+      'limitValuesUsed': limitValuesUsed,
+      'fraudVerdict': fraudVerdict,
     };
     
     // Write to transactions collection (this will trigger the Firestore rules via webhook logic)
     await _firestore.collection('transactions').doc(txnId).set(txnData);
     
-    // Run the same fraud detection logic as the webhook server
+    // Legacy simple fraud detection is still available if needed.
+    // For the new, richer fraud engine, prefer running it before calling
+    // this method and passing the results via the metadata above.
     await _runFraudDetection(txnData);
   }
   
@@ -188,6 +213,42 @@ class FirebaseService {
   Future<Map<String, dynamic>> getUserData(String uid) async {
     final doc = await _firestore.collection('users').doc(uid).get();
     return doc.data() ?? {};
+  }
+
+  /// Check if user has completed onboarding.
+  Future<bool> hasCompletedOnboarding(String uid) async {
+    try {
+      final doc = await _firestore.collection('users').doc(uid).get();
+      final data = doc.data();
+      return data?['onboardingCompleted'] == true;
+    } catch (e) {
+      print('Error checking onboarding status: $e');
+      return false;
+    }
+  }
+
+  /// Save onboarding data to Firestore under user's UID.
+  Future<void> saveOnboardingData(Map<String, dynamic> onboardingData) async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('User not logged in');
+    
+    await _firestore.collection('users').doc(user.uid).update({
+      ...onboardingData,
+      'onboardingCompleted': true,
+      'onboardingCompletedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Get user's selected currency from Firestore.
+  Future<String?> getUserCurrency(String uid) async {
+    try {
+      final doc = await _firestore.collection('users').doc(uid).get();
+      final data = doc.data();
+      return data?['selectedCurrency'] as String?;
+    } catch (e) {
+      print('Error getting user currency: $e');
+      return null;
+    }
   }
   /// Logs in a user with email and password using Firebase Auth.
   Future<UserCredential> loginWithEmail({required String email, required String password}) async {

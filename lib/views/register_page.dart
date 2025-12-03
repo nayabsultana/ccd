@@ -44,7 +44,10 @@ class _RegisterPageState extends State<RegisterPage> {
     setState(()=>loading=false);
     if(err!=null){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));return;}
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Account created')));
-    widget.onBackToLogin();
+    // Navigate to onboarding for new users
+    if (mounted) {
+      Navigator.pushReplacementNamed(context, '/onboarding');
+    }
   }
 
   @override

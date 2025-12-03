@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../controllers/auth_controller.dart';
-// ...existing code...
 import '../services/fcm_service.dart';
+import '../services/firebase_service.dart';
 
 class LoginPage extends StatefulWidget {
   final VoidCallback onRegister;
@@ -16,6 +16,7 @@ class _LoginPageState extends State<LoginPage> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final AuthController _authController = AuthController();
+  final FirebaseService _firebaseService = FirebaseService();
   bool _isSubmitting = false;
 
   void _submit() async {
@@ -48,10 +49,16 @@ class _LoginPageState extends State<LoginPage> {
         }
         return;
       }
-    }
-    
-    if (mounted) {
-      Navigator.pushReplacementNamed(context, '/dashboard');
+
+      // Check onboarding status
+      if (mounted) {
+        final hasCompletedOnboarding = await _firebaseService.hasCompletedOnboarding(user.uid);
+        if (hasCompletedOnboarding) {
+          Navigator.pushReplacementNamed(context, '/dashboard');
+        } else {
+          Navigator.pushReplacementNamed(context, '/onboarding');
+        }
+      }
     }
   }
 
